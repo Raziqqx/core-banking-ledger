@@ -1,0 +1,23 @@
+description: A non-positive amount is rejected with an RFC 7807 problem and a field error.
+name: create_payment_invalid_amount
+request:
+  method: POST
+  url: /payments
+  headers:
+    Content-Type: application/json
+    Authorization: Bearer eyJhbGciOiJSUzI1NiJ9.contract.sig
+    Idempotency-Key: 0e9d8c7b-6a5f-4e3d-8c1b-0a9f8e7d6c5b
+  body:
+    fromAccount: 1
+    toAccount: 2
+    amount: -5
+    currency: SGD
+response:
+  status: 400
+  headers:
+    Content-Type: application/problem+json
+  body:
+    status: 400
+    code: INVALID
+    errors:
+      - field: amount

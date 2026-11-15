@@ -1,0 +1,22 @@
+description: Reading a payment by id returns its current saga state.
+name: get_payment
+request:
+  method: GET
+  url: /payments/7d1c2b3a-4e5f-4a6b-8c7d-9e0f1a2b3c4d
+  headers:
+    Authorization: Bearer eyJhbGciOiJSUzI1NiJ9.contract.sig
+  matchers:
+    headers:
+      - key: Authorization
+        regex: "Bearer .+"
+response:
+  status: 200
+  headers:
+    Content-Type: application/json
+  body:
+    id: 7d1c2b3a-4e5f-4a6b-8c7d-9e0f1a2b3c4d
+    fromAccount: 1
+    toAccount: 2
+    amount: 2500
+    currency: SGD
+    status: COMPLETED

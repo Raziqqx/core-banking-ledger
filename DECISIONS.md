@@ -109,6 +109,35 @@ Decisions made while building, with the reason for each. Newest milestone last.
   retrying writers kept colliding. Switched to full-jitter exponential backoff capped at 64 ms; retries
   per 4000 ops fell from ~9,700 to ~6,300 (results/concurrency_it.csv) and the test passes.
 
+## Contracts, error handling and stress testing (M4)
+- **Spring Cloud Contract, producer side** (2025.0.0 BOM, contract 4.3.0). Three YAML contracts in
+  `app/src/test/resources/contracts/payments`: create payment (201, completed), invalid amount
+  (400 problem+json with a field error) and get payment (200). The Maven plugin generates
+  `contract.PaymentsTest` and the stubs jar. The tests are unit-phase (no Docker): `PaymentsContractBase`
+  runs the real controller, bean validation, `ApiErrorHandler` and Jackson in standalone MockMvc and
+  mocks everything behind the controller. Contracts pin the wire shape consumers depend on; auth and
+  money movement are already covered by the Testcontainers ITs, so repeating them here would only
+  slow the build. Contracts require `Authorization: Bearer .+` so a consumer stub forgetting the
+  header will not match.
+- **No consumer in the repo yet**: notifications consumes Kafka events, not this REST API. A consumer
+  would use the generated stubs jar with Stub Runner. Messaging contracts for `payment-events` are the
+  natural next step if notifications becomes its own deployable.
+- **RFC 7807 everywhere**: every error is `application/problem+json` with `type`, `title`, `status`,
+  `detail`, `instance` and a machine `code`. Framework errors (bad JSON, validation, missing header,
+  404/405/415) get the `code` added in `handleExceptionInternal`, and body validation also lists
+  `errors[{field, message}]`. Security-filter 401/403 use the same shape (`ProblemSecurityHandlers`).
+  Unknown exceptions become a generic 500 with the cause logged and never returned. Covered by
+  `ProblemDetailsIT` and the invalid-amount contract.
+- **Exception kept on purpose**: a payment whose saga failed returns 422 with the *payment* as the body,
+  not a problem. The client needs its id and final status, and the stored idempotent replay must be
+  byte-identical.
+- **Testcontainers ITs with security on**: all of them pass (they authenticate with dev-issuer admin
+  tokens through `IntegrationTestBase`). `ConcurrencyIT` drives the services directly, under the web layer.
+- **Stress test: the run A `ConcurrencyIT` counts**. It runs 16 threads x 4000 random transfers/saga
+  payments over 10 accounts in both locking modes and checks conservation, no negatives and a clean
+  audit. Adding a larger one would only add minutes to the build. The k6 HTTP load test in run C will
+  stress the full stack (auth, rate limit, saga) instead.
+
 ## Known gaps (to address in later runs)
 - **Saga crash recovery**: if the process dies mid-saga, the payment stays `RESERVED`/`POSTED` and its
   idempotency key stays `IN_PROGRESS`, so retries get 409. The fix is a recovery job that resumes or compensates stale
