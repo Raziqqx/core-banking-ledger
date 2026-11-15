@@ -100,6 +100,15 @@ public class LedgerService {
 
   /** Reserves funds: they stay in the balance but are no longer available. */
   public long placeHold(long accountId, long amount, String currency) {
+    return placeHold(accountId, amount, currency, null);
+  }
+
+  /**
+   * As {@link #placeHold(long, long, String)}, tagging the hold with the caller's {@code reference}
+   * (e.g. {@code payment:<id>}) so a recovery job can find a hold whose id the caller never got to
+   * persist.
+   */
+  public long placeHold(long accountId, long amount, String currency, String reference) {
     requirePositive(amount);
     return inTransaction(
         () -> {
@@ -109,8 +118,9 @@ public class LedgerService {
           }
           accounts.save(a.apply(0, amount));
           return jdbc.sql(
-                  "INSERT INTO holds(account_id, amount, status) VALUES (?, ?, 'ACTIVE') RETURNING id")
-              .params(accountId, amount)
+                  "INSERT INTO holds(account_id, amount, status, reference) VALUES (?, ?, 'ACTIVE', ?)"
+                      + " RETURNING id")
+              .params(accountId, amount, reference)
               .query(Long.class)
               .single();
         });
@@ -136,13 +146,37 @@ public class LedgerService {
           for (Account a : from.id() < to.id() ? List.of(newFrom, newTo) : List.of(newTo, newFrom)) {
             accounts.save(a);
           }
-          return insertEntry(
-              description,
-              List.of(
-                  new Posting(from.id(), -h.amount(), from.currency()),
-                  new Posting(to.id(), h.amount(), to.currency())),
-              null);
+          long entryId =
+              insertEntry(
+                  description,
+                  List.of(
+                      new Posting(from.id(), -h.amount(), from.currency()),
+                      new Posting(to.id(), h.amount(), to.currency())),
+                  null);
+          // Remember which entry the hold became, so recovery can reverse it from the hold alone.
+          jdbc.sql("UPDATE holds SET entry_id = ? WHERE id = ?").params(entryId, holdId).update();
+          return entryId;
         });
+  }
+
+  /** A hold as recovery sees it; {@code entryId} is set once the hold is captured. */
+  public record HoldView(long id, String status, Long entryId) {}
+
+  /** Holds tagged with {@code reference}, plus the hold {@code holdId} if it is not null. */
+  public List<HoldView> holds(String reference, Long holdId) {
+    return jdbc.sql("SELECT id, status, entry_id FROM holds WHERE reference = ? OR id = ? ORDER BY id")
+        .params(reference, holdId)
+        .query((rs, i) -> new HoldView(rs.getLong(1), rs.getString(2), (Long) rs.getObject(3)))
+        .list();
+  }
+
+  /** Whether {@code entryId} already has its (at most one) reversal. */
+  public boolean isReversed(long entryId) {
+    return jdbc.sql("SELECT count(*) FROM journal_entries WHERE reverses = ?")
+            .param(entryId)
+            .query(Long.class)
+            .single()
+        > 0;
   }
 
   /**

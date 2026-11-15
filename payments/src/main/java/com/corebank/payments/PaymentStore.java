@@ -12,7 +12,7 @@ import org.springframework.transaction.annotation.Transactional;
 /** Persists payments and saga progress. Terminal transitions also write the outbox event. */
 @Repository
 public class PaymentStore {
-  private static final RowMapper<Payment> MAPPER =
+  static final RowMapper<Payment> MAPPER =
       (rs, i) ->
           new Payment(
               rs.getObject("id", UUID.class),
@@ -53,22 +53,34 @@ public class PaymentStore {
         .orElseThrow(() -> DomainException.notFound("payment " + id));
   }
 
-  /** Records a non-terminal step so a crashed saga's progress is visible. */
+  /** Statuses of a saga that is still running (or died while running). */
+  static final String IN_FLIGHT = "('PENDING', 'RESERVED', 'POSTED')";
+
+  /**
+   * Records a non-terminal step so a crashed saga's progress is visible. A no-op once the payment
+   * is terminal, i.e. {@link SagaRecovery} has already taken it over.
+   */
   public void progress(UUID id, Payment.Status status, Long holdId, Long entryId) {
-    jdbc.sql("UPDATE payments SET status = ?, hold_id = ?, entry_id = ?, updated_at = now() WHERE id = ?")
+    jdbc.sql("UPDATE payments SET status = ?, hold_id = ?, entry_id = ?, updated_at = now()"
+            + " WHERE id = ? AND status IN " + IN_FLIGHT)
         .params(status.name(), holdId, entryId, id)
         .update();
   }
 
-  /** Terminal transition and its event, committed together (the outbox guarantee). */
+  /**
+   * Terminal transition and its event, committed together (the outbox guarantee). First writer
+   * wins: if the payment is already terminal (a late saga racing {@link SagaRecovery}), nothing is
+   * written and the stored payment is returned.
+   */
   @Transactional
   public Payment finish(Payment p, Payment.Status status, Long holdId, Long entryId, String reason) {
-    jdbc.sql(
-            "UPDATE payments SET status = ?, hold_id = ?, entry_id = ?, failure_reason = ?,"
-                + " updated_at = now() WHERE id = ?")
-        .params(status.name(), holdId, entryId, reason, p.id())
-        .update();
-    if (status != Payment.Status.COMPENSATION_FAILED) {
+    int updated =
+        jdbc.sql(
+                "UPDATE payments SET status = ?, hold_id = ?, entry_id = ?, failure_reason = ?,"
+                    + " updated_at = now() WHERE id = ? AND status IN " + IN_FLIGHT)
+            .params(status.name(), holdId, entryId, reason, p.id())
+            .update();
+    if (updated == 1 && status != Payment.Status.COMPENSATION_FAILED) {
       String type =
           status == Payment.Status.COMPLETED ? PaymentEvent.COMPLETED : PaymentEvent.FAILED;
       outbox.add(

@@ -7,6 +7,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -38,7 +39,7 @@ class PaymentSagaTest {
 
   @Test
   void happyPathRunsAllStepsAndCompensatesNothing() {
-    when(ledger.placeHold(1, 500, "SGD")).thenReturn(10L);
+    when(ledger.placeHold(eq(1L), eq(500L), eq("SGD"), any())).thenReturn(10L);
     when(ledger.captureHold(eq(10L), eq(2L), any())).thenReturn(20L);
 
     saga.run(p);
@@ -50,7 +51,7 @@ class PaymentSagaTest {
 
   @Test
   void reserveFailureEndsFailedWithNothingToUndo() {
-    when(ledger.placeHold(1, 500, "SGD")).thenThrow(DomainException.insufficientFunds(1));
+    when(ledger.placeHold(eq(1L), eq(500L), eq("SGD"), any())).thenThrow(DomainException.insufficientFunds(1));
 
     saga.run(p);
 
@@ -61,7 +62,7 @@ class PaymentSagaTest {
 
   @Test
   void postFailureReleasesTheHold() {
-    when(ledger.placeHold(1, 500, "SGD")).thenReturn(10L);
+    when(ledger.placeHold(eq(1L), eq(500L), eq("SGD"), any())).thenReturn(10L);
     when(ledger.captureHold(eq(10L), eq(2L), any()))
         .thenThrow(DomainException.invalid("currency mismatch"));
 
@@ -74,7 +75,7 @@ class PaymentSagaTest {
 
   @Test
   void notifyFailureReversesTheEntryThenReleasesInReverseOrder() {
-    when(ledger.placeHold(1, 500, "SGD")).thenReturn(10L);
+    when(ledger.placeHold(eq(1L), eq(500L), eq("SGD"), any())).thenReturn(10L);
     when(ledger.captureHold(eq(10L), eq(2L), any())).thenReturn(20L);
     when(store.finish(p, Status.COMPLETED, 10L, 20L, null))
         .thenThrow(new IllegalStateException("outbox write failed"));
@@ -88,8 +89,47 @@ class PaymentSagaTest {
   }
 
   @Test
+  void holdIsTaggedWithThePaymentReference() {
+    when(ledger.placeHold(eq(1L), eq(500L), eq("SGD"), any())).thenReturn(10L);
+    when(ledger.captureHold(eq(10L), eq(2L), any())).thenReturn(20L);
+
+    saga.run(p);
+
+    verify(ledger).placeHold(1L, 500L, "SGD", "payment:" + p.id());
+  }
+
+  @Test
+  void progressFailureAfterHoldStillReleasesTheHold() {
+    when(ledger.placeHold(eq(1L), eq(500L), eq("SGD"), any())).thenReturn(10L);
+    doThrow(new IllegalStateException("db blip"))
+        .when(store).progress(p.id(), Status.RESERVED, 10L, null);
+
+    saga.run(p);
+
+    verify(ledger).releaseHold(10L);
+    verify(ledger, never()).captureHold(anyLong(), anyLong(), any());
+    verify(store).finish(eq(p), eq(Status.COMPENSATED), eq(10L), isNull(), any());
+  }
+
+  @Test
+  void progressFailureAfterCaptureReversesTheTransfer() {
+    when(ledger.placeHold(eq(1L), eq(500L), eq("SGD"), any())).thenReturn(10L);
+    when(ledger.captureHold(eq(10L), eq(2L), any())).thenReturn(20L);
+    doThrow(new IllegalStateException("db blip"))
+        .when(store).progress(p.id(), Status.POSTED, 10L, 20L);
+
+    saga.run(p);
+
+    InOrder order = inOrder(ledger, store);
+    order.verify(ledger).reverse(20L);
+    order.verify(ledger).releaseHold(10L); // a no-op on a captured hold in the real ledger
+    order.verify(store).finish(eq(p), eq(Status.COMPENSATED), eq(10L), eq(20L), any());
+    verify(store, never()).finish(eq(p), eq(Status.COMPLETED), any(), any(), any());
+  }
+
+  @Test
   void failedCompensationIsFlaggedForOperators() {
-    when(ledger.placeHold(1, 500, "SGD")).thenReturn(10L);
+    when(ledger.placeHold(eq(1L), eq(500L), eq("SGD"), any())).thenReturn(10L);
     when(ledger.captureHold(eq(10L), eq(2L), any())).thenThrow(new IllegalStateException("boom"));
     when(ledger.releaseHold(10L)).thenThrow(new IllegalStateException("db down"));
 
@@ -108,10 +148,10 @@ class PaymentSagaTest {
 
   @Test
   void metricsCountOutcomesAndTimeEverySaga() {
-    when(ledger.placeHold(1, 500, "SGD")).thenReturn(10L);
+    when(ledger.placeHold(eq(1L), eq(500L), eq("SGD"), any())).thenReturn(10L);
     when(ledger.captureHold(eq(10L), eq(2L), any())).thenReturn(20L);
     saga.run(p);
-    when(ledger.placeHold(1, 500, "SGD")).thenThrow(DomainException.insufficientFunds(1));
+    when(ledger.placeHold(eq(1L), eq(500L), eq("SGD"), any())).thenThrow(DomainException.insufficientFunds(1));
     saga.run(p);
 
     assertThat(meters.counter("bank.payments", "outcome", "COMPLETED").count()).isEqualTo(1);
@@ -122,7 +162,7 @@ class PaymentSagaTest {
 
   @Test
   void unexpectedErrorWhileFinishingIsTaggedError() {
-    when(ledger.placeHold(1, 500, "SGD")).thenReturn(10L);
+    when(ledger.placeHold(eq(1L), eq(500L), eq("SGD"), any())).thenReturn(10L);
     when(ledger.captureHold(eq(10L), eq(2L), any())).thenReturn(20L);
     when(store.get(p.id())).thenThrow(new IllegalStateException("db down"));
 

@@ -33,6 +33,11 @@ ledger:
 
 payments:
   topic: payment-events
+  recovery:              # finishes sagas whose process died mid-run (SagaRecovery)
+    enabled: true
+    timeout: ${PAYMENTS_RECOVERY_TIMEOUT:PT5M}   # no progress for this long => compensate
+    interval-ms: 30000
+    batch-size: 50
 
 ratelimit:
   payments:          # per client (JWT subject), per instance

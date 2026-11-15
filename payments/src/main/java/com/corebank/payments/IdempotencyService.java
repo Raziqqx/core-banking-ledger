@@ -63,6 +63,14 @@ public class IdempotencyService {
         .single();
   }
 
+  /**
+   * Links a claimed key to the payment it is executing, before the saga starts, so recovery can
+   * complete the key if the process dies mid-saga.
+   */
+  public void attach(String key, UUID paymentId) {
+    jdbc.sql("UPDATE idempotency_keys SET payment_id = ? WHERE key = ?").params(paymentId, key).update();
+  }
+
   public void complete(String key, UUID paymentId, int status, String body) {
     jdbc.sql(
             "UPDATE idempotency_keys SET status = 'COMPLETED', payment_id = ?, response_status = ?,"

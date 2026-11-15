@@ -7,6 +7,7 @@ import io.micrometer.core.instrument.Timer;
 import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.List;
+import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -15,7 +16,8 @@ import org.springframework.stereotype.Service;
  * Orchestrated saga: reserve -> post -> notify. Each step is its own local transaction on a
  * participant, as it would be across services. If a step fails, the completed steps are undone in
  * reverse order (release the hold, reverse the journal entry), and the payment ends FAILED or
- * COMPENSATED with a PaymentFailed event.
+ * COMPENSATED with a PaymentFailed event. A saga that dies mid-run (process crash) is finished
+ * by {@link SagaRecovery}.
  *
  * <p>Metrics: {@code bank.payments{outcome}} counts finished sagas by final status and
  * {@code bank.saga.duration{outcome}} times them (with a percentile histogram for Prometheus).
@@ -34,9 +36,19 @@ public class PaymentSaga {
     this.meters = meters;
   }
 
-  private record Step(String name, Runnable action, Runnable compensation) {}
+  /**
+   * One saga step. {@code effect} is the participant call (the side effect to undo on failure);
+   * {@code record} persists its result. The step's compensation is registered as soon as
+   * {@code effect} returns, before {@code record} runs, so a failure while recording still undoes
+   * the side effect.
+   */
+  private record Step(String name, Runnable effect, Runnable record, Runnable compensation) {}
 
-  /** Mutable saga state shared by the steps. */
+  /** Hold reference used by the saga and by {@link SagaRecovery} to find a payment's holds. */
+  static String holdReference(UUID paymentId) {
+    return "payment:" + paymentId;
+  }
+
   private static final class Context {
     Long holdId;
     Long entryId;
@@ -67,29 +79,30 @@ public class PaymentSaga {
         List.of(
             new Step(
                 "reserve",
-                () -> {
-                  ctx.holdId = ledger.placeHold(p.fromAccount(), p.amount(), p.currency());
-                  store.progress(p.id(), Payment.Status.RESERVED, ctx.holdId, null);
-                },
+                () ->
+                    ctx.holdId =
+                        ledger.placeHold(
+                            p.fromAccount(), p.amount(), p.currency(), holdReference(p.id())),
+                () -> store.progress(p.id(), Payment.Status.RESERVED, ctx.holdId, null),
                 () -> ledger.releaseHold(ctx.holdId)),
             new Step(
                 "post",
-                () -> {
-                  ctx.entryId = ledger.captureHold(ctx.holdId, p.toAccount(), desc);
-                  store.progress(p.id(), Payment.Status.POSTED, ctx.holdId, ctx.entryId);
-                },
+                () -> ctx.entryId = ledger.captureHold(ctx.holdId, p.toAccount(), desc),
+                () -> store.progress(p.id(), Payment.Status.POSTED, ctx.holdId, ctx.entryId),
                 () -> ledger.reverse(ctx.entryId)),
             new Step(
                 "notify",
                 // The outbox write commits with the COMPLETED status; the relay delivers it later.
                 () -> store.finish(p, Payment.Status.COMPLETED, ctx.holdId, ctx.entryId, null),
+                () -> {},
                 () -> {}));
 
     Deque<Step> done = new ArrayDeque<>();
     for (Step step : steps) {
       try {
-        step.action().run();
-        done.push(step);
+        step.effect().run();
+        done.push(step); // the side effect happened: from here on it must be undone on failure
+        step.record().run();
       } catch (RuntimeException e) {
         String reason = step.name() + " failed: " + describe(e);
         log.warn("payment {} {}; compensating {} step(s)", p.id(), reason, done.size());

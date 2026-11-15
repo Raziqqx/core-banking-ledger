@@ -234,12 +234,50 @@ Decisions made while building, with the reason for each. Newest milestone last.
 - **Reproduce**: `scripts/reproduce.sh` runs `mvn verify` (copies `app/target/concurrency_it.csv` to
   `results/`), then `scripts/run-k6.sh`, so it regenerates every file under `results/`.
 
+## Saga compensation and crash recovery (post-M6 review fixes)
+- **Compensation is registered per ledger call, not per step.** Each saga step is split into the
+  participant call (`effect`) and its bookkeeping (`record`, i.e. `store.progress`). The step is
+  pushed onto the compensation stack as soon as the ledger call returns, so a failure while
+  recording still releases the hold / reverses the transfer. Before this, a `progress` failure after
+  `captureHold` ended the payment `COMPENSATED` with the money still moved. Tests:
+  `PaymentSagaTest.progressFailureAfter*` (mocks) and `SagaRecoveryIT.progressFailureAfter*` (real
+  ledger: balances unchanged, no active holds, audit clean).
+- **Recovery job (`SagaRecovery`)**: every `payments.recovery.interval-ms` (30 s) it claims payments
+  still `PENDING`/`RESERVED`/`POSTED` with no progress for `payments.recovery.timeout` (default 5 min),
+  one per transaction, with `SELECT ... FOR UPDATE SKIP LOCKED`, so any number of instances can run
+  it. Compensation is idempotent: release every hold of the payment (`releaseHold` is a no-op on a
+  non-active hold), then reverse the entry of any captured hold that has no reversal yet. The payment
+  ends `COMPENSATED` (something was undone) or `FAILED` (nothing happened), with a PaymentFailed outbox
+  event, and its idempotency key is completed with the 422 body the controller would have sent, so a
+  retry replays it instead of getting 409. Recovery never rolls a saga forward: a crashed payment is
+  always undone, which is the conservative choice for money and avoids double-posting.
+- **Finding what a dead saga did**: the saga may die between a ledger call and `progress`, so
+  `payments.hold_id`/`entry_id` are not enough. V5 adds `holds.reference` (`payment:<id>`, set by the
+  saga through a new `placeHold` overload) and `holds.entry_id` (set by `captureHold`), so recovery
+  finds the hold and the entry it became from the payment id alone.
+- **Ledger calls join the recovery transaction** (`LedgerService` uses a `REQUIRED`
+  `TransactionTemplate`), so the release/reversal, the status change, the outbox event and the key
+  completion commit atomically, and the payment row lock is held throughout. If the ledger refuses a
+  reversal (payee already spent the funds), the transaction rolls back and a fresh one marks the
+  payment `COMPENSATION_FAILED` (key completed with 422) for an operator. Any other error aborts the
+  pass and is retried next tick.
+- **Slow, not dead, sagas**: if recovery takes over a saga that is still running, the two cannot both
+  win: `captureHold` and `releaseHold` are conditional on the hold being `ACTIVE`, and
+  `PaymentStore.progress`/`finish` now only update in-flight payments (first writer wins; `finish`
+  writes the outbox event only if it changed the row). A late saga gets back the recovered payment.
+  The timeout should be far above the saga's p99.9 duration; 5 minutes is.
+- **Idempotency keys**: the controller now links the key to the payment (`attach`) before the saga
+  starts. The job also completes keys left `IN_PROGRESS` for payments that did finish (crash between
+  `finish` and storing the response), and deletes stale keys that never got a payment (crash before
+  any money moved), so the retry simply runs again.
+- Tests: `SagaRecoveryIT` simulates crashes by writing a mid-saga state into Postgres and ageing it:
+  hold placed but not recorded, transfer captured but not recorded, nothing done, unlinked key, and
+  4 concurrent recovery runs over 10 stale payments (each compensated exactly once, audit clean).
+- Not done: alerting on `bank.saga.recovered{outcome="COMPENSATION_FAILED"}`; keys still have no TTL.
+
 ## Known gaps (to address in later runs)
-- **Saga crash recovery**: if the process dies mid-saga, the payment stays `RESERVED`/`POSTED` and its
-  idempotency key stays `IN_PROGRESS`, so retries get 409. The fix is a recovery job that resumes or compensates stale
-  sagas using `payments.hold_id`/`entry_id` (the state is already persisted for this).
 - Idempotency keys never expire (they need a TTL job). (Per-client scoping was added in M3.)
 - A reversal can fail if the payee has already spent the funds (the overdraft rule applies). The saga then reports
-  `COMPENSATION_FAILED`. Real banks handle this with a receivable or manual process.
+  `COMPENSATION_FAILED` (the saga and the recovery job alike). Real banks handle this with a receivable or manual process.
 - Postgres and the broker are not covered by one transaction. That is the point of the outbox, but the relay still adds
   up to one polling interval of latency.

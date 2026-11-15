@@ -64,7 +64,9 @@ public class PaymentController {
           throw new DomainException(409, "IDEMPOTENCY_CONFLICT", c.reason());
       case IdempotencyService.Replay r -> respond(r.status(), r.body());
       case IdempotencyService.Claimed ignored -> {
-        Payment p = saga.run(store.create(req));
+        Payment created = store.create(req);
+        idempotency.attach(scopedKey, created.id());
+        Payment p = saga.run(created);
         int status = p.status() == Payment.Status.COMPLETED ? 201 : 422;
         String body = json.writeValueAsString(p);
         idempotency.complete(scopedKey, p.id(), status, body);
