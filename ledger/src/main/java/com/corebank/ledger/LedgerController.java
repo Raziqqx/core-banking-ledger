@@ -1,6 +1,7 @@
 package com.corebank.ledger;
 
 import com.corebank.accounts.Account;
+import com.corebank.accounts.AccountAccess;
 import com.corebank.accounts.AccountRepository;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Max;
@@ -38,11 +39,14 @@ public class LedgerController {
   private final LedgerService ledger;
   private final LedgerAuditor auditor;
   private final AccountRepository accounts;
+  private final AccountAccess access;
 
-  public LedgerController(LedgerService ledger, LedgerAuditor auditor, AccountRepository accounts) {
+  public LedgerController(
+      LedgerService ledger, LedgerAuditor auditor, AccountRepository accounts, AccountAccess access) {
     this.ledger = ledger;
     this.auditor = auditor;
     this.accounts = accounts;
+    this.access = access;
   }
 
   @PostMapping("/accounts/{id}/deposits")
@@ -62,6 +66,7 @@ public class LedgerController {
 
   @GetMapping("/accounts/{id}/balance")
   public Balance balance(@PathVariable long id) {
+    access.requireOwner(id);
     Account a = accounts.get(id);
     return new Balance(a.id(), a.currency(), a.balance(), a.held(), a.available());
   }
@@ -69,6 +74,7 @@ public class LedgerController {
   @GetMapping("/accounts/{id}/history")
   public List<Map<String, Object>> history(
       @PathVariable long id, @RequestParam(defaultValue = "50") @Min(1) @Max(500) int limit) {
+    access.requireOwner(id);
     return ledger.history(id, limit);
   }
 

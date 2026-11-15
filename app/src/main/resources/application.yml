@@ -18,12 +18,21 @@ spring:
   mvc:
     problemdetails:
       enabled: true
+  # JWT validation: the `dev` profile supplies an in-memory issuer (DevTokenIssuer). Any other
+  # profile must point at a real issuer, e.g.
+  # SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_ISSUERURI=https://idp.example/realms/bank;
+  # without one there is no JwtDecoder and the app refuses to start (it never runs open).
 
 ledger:
   locking: PESSIMISTIC   # or OPTIMISTIC; see DECISIONS.md
 
 payments:
   topic: payment-events
+
+ratelimit:
+  payments:          # per client (JWT subject), per instance
+    capacity: ${PAYMENTS_RATE_CAPACITY:30}
+    period: ${PAYMENTS_RATE_PERIOD:PT1M}
 
 outbox:
   relay:

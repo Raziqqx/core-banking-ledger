@@ -71,11 +71,49 @@ Decisions made while building, with the reason for each. Newest milestone last.
 - **Notifications** are an idempotent consumer: `notifications.event_id` is unique and inserts use
   `ON CONFLICT DO NOTHING`. Each event therefore gives exactly one notification, even when redelivered (tested).
 
+## Security, API docs and rate limiting (M3)
+- **JWT resource server, no auth server in the repo**. Tokens are RS256 JWTs with `sub` (the customer id,
+  equal to `accounts.owner`) and a `roles` claim (`ADMIN`/`CUSTOMER`) mapped to `ROLE_*`. Under the `dev`
+  profile `DevTokenIssuer` generates an RSA key pair in memory at startup and serves `POST /dev/token`;
+  no key material is committed and tokens die with the process. The decoder checks signature, `exp`/`nbf`
+  and `iss`. Any other profile must set `spring.security.oauth2.resourceserver.jwt.issuer-uri`; without
+  it there is no `JwtDecoder` and the app does not start, so it can never run open by accident.
+- **Two layers of authorisation**. Coarse role rules sit in `SecurityConfig` (admin-only: open accounts,
+  deposits, raw `/transfers`, `/ledger/audit`, `/notifications`; everything else needs ADMIN or CUSTOMER).
+  Ownership needs the account row, so it is `AccountAccess` in the accounts module, called by the
+  controllers: a customer may read only their own accounts, pay only *from* their own account, and read a
+  payment only if they own its payer or payee account. System accounts belong to no customer.
+- **Domain modules stay security-free**: they see a `CurrentCaller` interface (in `common`); the app
+  implements it from the `SecurityContext`. Unit tests use a two-line fake.
+- **Notifications are admin-only for now**: the notifications module owns no account data and must not
+  depend on `accounts` (it is the most likely module to be split out). A customer view would join via the
+  API gateway or carry the owner in the event.
+- **403 vs 404**: a customer asking for a missing account gets 404 and for someone else's 403, which
+  reveals that the id exists. Account ids are sequential so this leaks little; hiding it (404 for both)
+  is a one-line change if required.
+- **Idempotency keys are scoped per caller**: stored as `<sub>:<key>` (V4 widens the column to 301; `sub`
+  is capped at 200 chars). This closes the M2 gap where two clients choosing the same key collided.
+- **Rate limit**: Bucket4j token bucket per JWT subject on `POST /payments`, default 30 per minute with
+  greedy refill (`ratelimit.payments.*`). It is an MVC interceptor, so it runs after authentication (an
+  anonymous caller cannot drain someone else's bucket) and before the idempotency check (retries count).
+  Over the limit: 429 problem+json with `Retry-After` in whole seconds, rounded up. Buckets live in a
+  bounded Caffeine cache (100k clients, evicted after 5 idle periods, by when they are full anyway), so
+  the limit is **per instance**; a cluster-wide limit would use Bucket4j's Postgres/Redis backend.
+- **springdoc** 2.8.13 at `/v3/api-docs` and `/swagger-ui.html`, both public, with a bearer scheme so
+  "Authorize" in Swagger UI works with a `/dev/token` token.
+- **Tests use real tokens**, not `spring-security-test`'s `jwt()` shortcut, so the decoder, validators
+  and role mapping are exercised. ITs run under `dev`; `IntegrationTestBase.call` adds an admin token unless
+  the request sets its own, and lifts the rate limit. `RateLimitIT` gets its own context (3 per hour).
+- **Finding: optimistic retries could starve**. With security on (more CPU load), one `ConcurrencyIT`
+  OPTIMISTIC run threw after 50 failed attempts on a hot account. The backoff was linear (1-11 ms) and
+  retrying writers kept colliding. Switched to full-jitter exponential backoff capped at 64 ms; retries
+  per 4000 ops fell from ~9,700 to ~6,300 (results/concurrency_it.csv) and the test passes.
+
 ## Known gaps (to address in later runs)
 - **Saga crash recovery**: if the process dies mid-saga, the payment stays `RESERVED`/`POSTED` and its
   idempotency key stays `IN_PROGRESS`, so retries get 409. The fix is a recovery job that resumes or compensates stale
   sagas using `payments.hold_id`/`entry_id` (the state is already persisted for this).
-- Idempotency keys are global, not scoped per client, until auth arrives in Run B. Keys never expire (they need a TTL job).
+- Idempotency keys never expire (they need a TTL job). (Per-client scoping was added in M3.)
 - A reversal can fail if the payee has already spent the funds (the overdraft rule applies). The saga then reports
   `COMPENSATION_FAILED`. Real banks handle this with a receivable or manual process.
 - Postgres and the broker are not covered by one transaction. That is the point of the outbox, but the relay still adds

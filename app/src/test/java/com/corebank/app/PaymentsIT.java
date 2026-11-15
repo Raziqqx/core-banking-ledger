@@ -25,7 +25,8 @@ class PaymentsIT extends IntegrationTestBase {
       throws Exception {
     return postJson("/payments", Map.of("fromAccount", from, "toAccount", to, "amount", amount,
             "currency", ccy, "reference", "invoice-42"))
-        .header("Idempotency-Key", key);
+        .header("Idempotency-Key", key)
+        .header("Authorization", adminBearer());
   }
 
   private long count(String sql, Object... params) {

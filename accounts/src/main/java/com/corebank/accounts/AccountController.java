@@ -23,11 +23,14 @@ public class AccountController {
       @PositiveOrZero long overdraftLimit) {}
 
   private final AccountRepository accounts;
+  private final AccountAccess access;
 
-  public AccountController(AccountRepository accounts) {
+  public AccountController(AccountRepository accounts, AccountAccess access) {
     this.accounts = accounts;
+    this.access = access;
   }
 
+  /** Admin only (enforced in the security config); {@code owner} is the customer's JWT subject. */
   @PostMapping
   @ResponseStatus(HttpStatus.CREATED)
   public Account open(@Valid @RequestBody OpenAccountRequest req) {
@@ -36,6 +39,7 @@ public class AccountController {
 
   @GetMapping("/{id}")
   public Account get(@PathVariable long id) {
+    access.requireOwner(id);
     return accounts.get(id);
   }
 }

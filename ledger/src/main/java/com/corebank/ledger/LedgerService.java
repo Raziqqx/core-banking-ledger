@@ -230,9 +230,14 @@ public class LedgerService {
     }
   }
 
+  /**
+   * Full-jitter exponential backoff, capped at 64 ms. The earlier linear 1-11 ms window let a hot
+   * account starve one writer for all 50 attempts under 16 threads (see DECISIONS.md, M3).
+   */
   private static void backoff(int attempt) {
+    long cap = 1L << Math.min(attempt, 6);
     try {
-      Thread.sleep(ThreadLocalRandom.current().nextLong(1, 2L + Math.min(attempt, 10)));
+      Thread.sleep(ThreadLocalRandom.current().nextLong(1, cap + 1));
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
       throw new IllegalStateException("interrupted while retrying", e);
