@@ -1,0 +1,6 @@
+apiVersion: v2
+name: core-banking-ledger
+description: Core banking ledger service (accounts, double-entry ledger, payments saga, outbox)
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

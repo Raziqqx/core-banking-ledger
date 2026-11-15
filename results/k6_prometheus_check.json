@@ -1,5 +1,5 @@
 {
-  "queried_at": "2026-11-15T14:53:45.219151+00:00",
+  "queried_at": "2026-11-15T15:25:10.141797+00:00",
   "source": "Prometheus /api/v1/query during the k6 run (scripts/run-k6.sh)",
   "series": [
     {
@@ -7,19 +7,19 @@
       "labels": {
         "outcome": "COMPLETED"
       },
-      "value": "9853"
+      "value": "12529"
     },
     {
       "query": "sum by (outcome) (bank_saga_duration_seconds_count)",
       "labels": {
         "outcome": "COMPLETED"
       },
-      "value": "9853"
+      "value": "12529"
     },
     {
       "query": "histogram_quantile(0.99, sum by (le) (rate(bank_saga_duration_seconds_bucket{outcome=\"COMPLETED\"}[30s])))",
       "labels": {},
-      "value": "0.08180266061070994"
+      "value": "0.06060124676434785"
     },
     {
       "query": "bank_outbox_lag_seconds",
@@ -29,7 +29,7 @@
         "instance": "host.docker.internal:8080",
         "job": "core-banking-ledger"
       },
-      "value": "0.040772"
+      "value": "0.143356"
     },
     {
       "query": "bank_outbox_pending",
@@ -39,12 +39,12 @@
         "instance": "host.docker.internal:8080",
         "job": "core-banking-ledger"
       },
-      "value": "75"
+      "value": "54"
     },
     {
       "query": "histogram_quantile(0.99, sum by (le) (rate(bank_outbox_publish_delay_seconds_bucket[30s])))",
       "labels": {},
-      "value": "0.2401622645478547"
+      "value": "0.2272919204496295"
     }
   ]
 }

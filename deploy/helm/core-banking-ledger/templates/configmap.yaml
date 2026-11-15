@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "cbl.fullname" . }}
+  labels: {{- include "cbl.labels" . | nindent 4 }}
+data:
+  DB_URL: {{ .Values.config.dbUrl | quote }}
+  KAFKA_BOOTSTRAP: {{ .Values.config.kafkaBootstrap | quote }}
+  SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_ISSUERURI: {{ .Values.config.jwtIssuerUri | quote }}
+  LEDGER_LOCKING: {{ .Values.config.ledgerLocking | quote }}
+  PAYMENTS_RATE_CAPACITY: {{ .Values.config.paymentsRateCapacity | quote }}
+  TRACING_ENABLED: {{ .Values.config.tracingEnabled | quote }}
+  TRACING_SAMPLING: {{ .Values.config.tracingSampling | quote }}
+  OTLP_TRACING_ENDPOINT: {{ .Values.config.otlpTracingEndpoint | quote }}
+  GENAI_CATEGORISER_ENABLED: {{ .Values.config.genaiCategoriserEnabled | quote }}
+  GENAI_CATEGORISER_PROVIDER: {{ .Values.config.genaiCategoriserProvider | quote }}
+  LOG_FORMAT: ecs

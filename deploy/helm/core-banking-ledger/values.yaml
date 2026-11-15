@@ -1,0 +1,42 @@
+# Minimal chart: the app only. PostgreSQL and Kafka/Redpanda are expected to exist already
+# (managed services or their own charts); point the values below at them.
+replicaCount: 2
+
+image:
+  repository: ghcr.io/example/core-banking-ledger   # placeholder: set to your registry
+  tag: ""                                            # defaults to the chart appVersion
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 80
+
+config:
+  dbUrl: jdbc:postgresql://postgres:5432/bank
+  kafkaBootstrap: redpanda:9092
+  # Required outside the dev profile: the app refuses to start without a JWT issuer.
+  jwtIssuerUri: https://idp.example.com/realms/bank
+  ledgerLocking: PESSIMISTIC
+  paymentsRateCapacity: "30"
+  tracingEnabled: "true"
+  tracingSampling: "0.1"
+  otlpTracingEndpoint: http://otel-collector:4318/v1/traces
+  genaiCategoriserEnabled: "false"
+  genaiCategoriserProvider: mock
+
+# Secret placeholders. Prefer existingSecret (created by your secret manager / sealed-secrets);
+# the inline values exist only so `helm template` renders and must be overridden.
+secret:
+  existingSecret: ""
+  dbUser: CHANGE_ME
+  dbPassword: CHANGE_ME
+  anthropicApiKey: ""   # only read when genaiCategoriserProvider=anthropic
+
+resources:
+  requests: { cpu: 250m, memory: 512Mi }
+  limits: { memory: 768Mi }
+
+podAnnotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/path: /actuator/prometheus
+  prometheus.io/port: "8080"

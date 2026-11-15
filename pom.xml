@@ -33,6 +33,7 @@
     <spring-cloud-contract.version>4.3.0</spring-cloud-contract.version>
     <springdoc.version>2.8.13</springdoc.version>
     <bucket4j.version>8.14.0</bucket4j.version>
+    <anthropic-java.version>3.3.0</anthropic-java.version>
   </properties>
 
   <dependencyManagement>

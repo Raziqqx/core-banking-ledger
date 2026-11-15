@@ -77,3 +77,9 @@ logging:
       console: ${LOG_FORMAT:}
   level:
     org.apache.kafka: WARN
+
+genai:
+  categoriser:
+    enabled: ${GENAI_CATEGORISER_ENABLED:false}   # feature flag: off = no bean, endpoint 404
+    provider: ${GENAI_CATEGORISER_PROVIDER:mock}  # mock (deterministic) | anthropic (needs ANTHROPIC_API_KEY)
+    model: ${GENAI_CATEGORISER_MODEL:claude-opus-5-5}

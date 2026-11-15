@@ -177,13 +177,62 @@ Decisions made while building, with the reason for each. Newest milestone last.
   limiter. Tracing is on at 100% sampling, so the numbers are conservative. The script queries
   Prometheus mid-run (`results/k6_prometheus_check.json`) and runs `GET /ledger/audit` after
   (`results/k6_ledger_audit.json`).
-- **Result** (results/k6_payments.md, i5-14500HX, WSL2, 7 GB): about 300 req/s, p50 62 ms,
-  p95 90 ms, p99 ~115-125 ms, 0 errors over ~18.8k payments, and a clean ledger audit afterwards.
-  During the run Prometheus showed `bank_payments_total{outcome="COMPLETED"}` matching the saga
-  timer count, an outbox lag of tens of ms and a publish-delay p99 of about 240 ms (the relay polls
-  every 200 ms, so that is the expected floor plus batching).
+- **Result** (results/k6_payments.md, i5-14500HX, WSL2, 7 GB; the committed run is from
+  `scripts/reproduce.sh`): 380 req/s, p50 50 ms, p95 70 ms, p99 86 ms, 0 errors over 23.5k
+  payments, and a clean ledger audit afterwards. Two earlier runs on the same machine, with other
+  work running alongside, gave about 300 req/s with p99 114-123 ms, so expect roughly 25% run-to-run
+  variance on a laptop. During the runs Prometheus showed `bank_payments_total{outcome="COMPLETED"}`
+  equal to the saga timer count, an outbox lag of tens of ms and a publish-delay p99 of about 240 ms
+  (the relay polls every 200 ms, so that is the expected floor plus batching).
 - **Flaky test fixed**: `PaymentRateLimiterTest` used a 10 s period and failed once on a busy machine
   (class loading took 2 s, so refill had already started). It now uses a 1 h period.
+
+## Packaging, deployment, CI and GenAI (M6)
+- **Dockerfile**: multi-stage. `maven:3.9.9-eclipse-temurin-21` builds with a BuildKit cache mount
+  for `~/.m2` and `-Dmaven.test.skip=true`, because tests run in CI, not in the image build. The runtime is
+  `eclipse-temurin:21-jre-alpine`, with the Boot jar extracted into layers (dependencies first, so a
+  code change only replaces a ~350 kB layer), the `JarLauncher` entrypoint, numeric UID 10001 (so
+  Kubernetes can check `runAsNonRoot`), `MaxRAMPercentage=75`, `ExitOnOutOfMemoryError`, ECS JSON
+  logs and a `wget` healthcheck on the liveness probe. Smoke-tested: the container ran as `uid=10001`,
+  was reported healthy, and ran a payment plus a category lookup against compose Postgres/Redpanda.
+- **Helm chart** (`deploy/helm/core-banking-ledger`): Deployment, Service, ConfigMap, and a Secret
+  that is a *placeholder* (`CHANGE_ME`), skipped when `secret.existingSecret` is set. The chart deploys only
+  the app; Postgres and Kafka are expected to be managed services or their own charts. Readiness,
+  liveness and startup probes use the actuator probe groups (the startup probe allows 3 min for
+  Flyway). The pod runs non-root with seccomp RuntimeDefault, a read-only root filesystem (with a `/tmp`
+  emptyDir for Tomcat), all capabilities dropped and no privilege escalation. A config checksum
+  annotation rolls the pods on config changes. Tracing sampling defaults to 10% in the chart.
+  Validated with `helm lint` and `helm template | kubeconform -strict` (4/4 valid), run through the
+  `alpine/helm:3.16.3` and `kubeconform:v0.6.7` images (no sudo install needed).
+- **CI** (`.github/workflows/ci.yml`, no secrets): `mvn -B verify` on ubuntu-latest (Testcontainers
+  uses the runner's Docker) uploads the surefire/failsafe reports and the concurrency CSV. Then
+  `docker build` plus a Trivy scan (CRITICAL/HIGH, **report-only** until the baseline is triaged), and
+  `helm lint` + kubeconform. Deploying is left out: there is no cluster to deploy to without credentials.
+- **GenAI transaction categoriser behind a feature flag**: `genai.categoriser.enabled`
+  (`GENAI_CATEGORISER_ENABLED`, default false). When it is off, neither the beans nor the endpoint
+  exist (404). `GET /payments/{id}/category` applies the same ownership rule as reading the payment.
+  - Providers: `mock` (default) uses deterministic keyword rules, needs no network, and is used by every
+    test. `anthropic` calls Claude through the official `anthropic-java` SDK (3.3.0), with model
+    `claude-opus-5-5` by default (`GENAI_CATEGORISER_MODEL`), low effort and `max_tokens` 1024 (thinking
+    cannot be disabled on that model, so the budget leaves room for it). The key comes only from
+    `ANTHROPIC_API_KEY` in the environment (a Secret in the chart).
+  - **Fail closed to OTHER**: the answer must be exactly one label from a closed enum. Anything else
+    becomes `OTHER`: extra text, a refusal, a truncated reply or an API error. A category is
+    advisory and must never block or change money movement, so the categoriser never throws.
+  - **Prompt injection**: the payment reference is customer-written. It is fenced in `<reference>`
+    tags (with `<` escaped so it cannot close the fence), and the system prompt says it is data. The
+    strict enum parse is the real control: an injected instruction can at worst pick a wrong label.
+  - **Data minimisation**: the model receives only reference, amount and currency, never account
+    ids, owners or balances.
+  - Tests: `MockCategoriserTest` (rules, determinism, strict parse), `AnthropicCategoriserTest` (SDK
+    client mocked with Mockito; accepts an exact label; injection text, refusal, truncation and API
+    errors give OTHER; checks that the request fences the reference), and `CategoriserFlagTest`
+    (off by default, mock when enabled, an unknown provider fails startup).
+  - Not done: statement Q&A (the second half of the brief's GenAI item); server-side refusal
+    fallbacks (a refusal already maps to OTHER); and an IT for the endpoint with the flag on,
+    which would need another Spring context.
+- **Reproduce**: `scripts/reproduce.sh` runs `mvn verify` (copies `app/target/concurrency_it.csv` to
+  `results/`), then `scripts/run-k6.sh`, so it regenerates every file under `results/`.
 
 ## Known gaps (to address in later runs)
 - **Saga crash recovery**: if the process dies mid-saga, the payment stays `RESERVED`/`POSTED` and its
