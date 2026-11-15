@@ -1,0 +1,4 @@
+timestamp,scenario,accounts,threads,ops,committed,rejected_insufficient_funds,optimistic_retries,millis,ops_per_sec
+2026-11-15T13:56:58.005507300Z,saga-PESSIMISTIC,10,16,4000,3464,536,0,8027,498
+2026-11-15T13:57:04.395046502Z,transfer-PESSIMISTIC,10,16,4000,3513,487,0,6110,654
+2026-11-15T13:57:11.694789022Z,transfer-OPTIMISTIC,10,16,4000,3429,571,9788,7157,558

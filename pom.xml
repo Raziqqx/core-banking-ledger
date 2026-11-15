@@ -19,6 +19,8 @@
     <module>common</module>
     <module>accounts</module>
     <module>ledger</module>
+    <module>payments</module>
+    <module>notifications</module>
     <module>app</module>
   </modules>
 
