@@ -1,0 +1,35 @@
+spring:
+  application:
+    name: core-banking-ledger
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/bank}
+    username: ${DB_USER:bank}
+    password: ${DB_PASSWORD:bank}
+    hikari:
+      maximum-pool-size: 20
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP:localhost:19092}
+    producer:
+      acks: all
+      properties:
+        enable.idempotence: true
+    consumer:
+      auto-offset-reset: earliest
+  mvc:
+    problemdetails:
+      enabled: true
+
+ledger:
+  locking: PESSIMISTIC   # or OPTIMISTIC; see DECISIONS.md
+
+payments:
+  topic: payment-events
+
+outbox:
+  relay:
+    enabled: true
+    interval-ms: 200
+
+logging:
+  level:
+    org.apache.kafka: WARN
