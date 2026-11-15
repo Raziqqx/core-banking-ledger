@@ -14,6 +14,7 @@ import static org.mockito.Mockito.when;
 import com.corebank.common.DomainException;
 import com.corebank.ledger.LedgerService;
 import com.corebank.payments.Payment.Status;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.time.Instant;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
@@ -23,7 +24,8 @@ import org.mockito.InOrder;
 class PaymentSagaTest {
   private final LedgerService ledger = mock(LedgerService.class);
   private final PaymentStore store = mock(PaymentStore.class);
-  private final PaymentSaga saga = new PaymentSaga(ledger, store);
+  private final SimpleMeterRegistry meters = new SimpleMeterRegistry();
+  private final PaymentSaga saga = new PaymentSaga(ledger, store, meters);
   private final Payment p =
       new Payment(UUID.randomUUID(), 1, 2, 500, "SGD", null, Status.PENDING, null, null, null,
           Instant.now());
@@ -102,5 +104,30 @@ class PaymentSagaTest {
     var a = new PaymentRequest(1L, 2L, 500, "SGD", "rent");
     assertThat(svc.hash(a)).isEqualTo(svc.hash(new PaymentRequest(1L, 2L, 500, "SGD", "rent")));
     assertThat(svc.hash(a)).isNotEqualTo(svc.hash(new PaymentRequest(1L, 2L, 501, "SGD", "rent")));
+  }
+
+  @Test
+  void metricsCountOutcomesAndTimeEverySaga() {
+    when(ledger.placeHold(1, 500, "SGD")).thenReturn(10L);
+    when(ledger.captureHold(eq(10L), eq(2L), any())).thenReturn(20L);
+    saga.run(p);
+    when(ledger.placeHold(1, 500, "SGD")).thenThrow(DomainException.insufficientFunds(1));
+    saga.run(p);
+
+    assertThat(meters.counter("bank.payments", "outcome", "COMPLETED").count()).isEqualTo(1);
+    assertThat(meters.counter("bank.payments", "outcome", "FAILED").count()).isEqualTo(1);
+    assertThat(meters.get("bank.saga.duration").tag("outcome", "COMPLETED").timer().count())
+        .isEqualTo(1);
+  }
+
+  @Test
+  void unexpectedErrorWhileFinishingIsTaggedError() {
+    when(ledger.placeHold(1, 500, "SGD")).thenReturn(10L);
+    when(ledger.captureHold(eq(10L), eq(2L), any())).thenReturn(20L);
+    when(store.get(p.id())).thenThrow(new IllegalStateException("db down"));
+
+    org.assertj.core.api.Assertions.assertThatThrownBy(() -> saga.run(p))
+        .isInstanceOf(IllegalStateException.class);
+    assertThat(meters.counter("bank.payments", "outcome", "ERROR").count()).isEqualTo(1);
   }
 }

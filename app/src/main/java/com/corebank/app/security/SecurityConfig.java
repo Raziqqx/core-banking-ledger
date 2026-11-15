@@ -30,6 +30,11 @@ public class SecurityConfig {
         .authorizeHttpRequests(a -> a
             .requestMatchers("/v3/api-docs/**", "/swagger-ui/**", "/swagger-ui.html", "/error")
             .permitAll()
+            // Probes and the Prometheus scrape. Only health/info/prometheus are exposed; in a
+            // cluster the scrape path is reachable inside the network only (see DECISIONS.md).
+            .requestMatchers(HttpMethod.GET, "/actuator/health/**", "/actuator/health",
+                "/actuator/info", "/actuator/prometheus")
+            .permitAll()
             // Only mapped under the dev profile; a 404 everywhere else.
             .requestMatchers(HttpMethod.POST, "/dev/token").permitAll()
             .requestMatchers(HttpMethod.POST, "/accounts", "/accounts/*/deposits", "/transfers")

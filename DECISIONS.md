@@ -138,6 +138,53 @@ Decisions made while building, with the reason for each. Newest milestone last.
   audit. Adding a larger one would only add minutes to the build. The k6 HTTP load test in run C will
   stress the full stack (auth, rate limit, saga) instead.
 
+## Observability and load testing (M5)
+- **Test runs no longer touch tracked files**: `ConcurrencyIT` appends to `app/target/concurrency_it.csv`
+  (override with `-Dconcurrency.results=...`); `scripts/reproduce.sh` copies it to `results/`. Before
+  this every `mvn verify` dirtied the tree.
+- **Custom metrics** (Micrometer, scraped at `/actuator/prometheus`):
+  - `bank_payments_total{outcome}`: finished sagas by final status (COMPLETED, FAILED, COMPENSATED,
+    COMPENSATION_FAILED, or ERROR when an unexpected exception escapes). The tag is the status the
+    saga *decided*, kept in the saga context, not re-read from the store.
+  - `bank_saga_duration_seconds{outcome}`: a timer with a percentile histogram, so p95/p99 can be
+    aggregated across instances in PromQL (client-side percentiles cannot be).
+  - `bank_outbox_lag_seconds` (age of the oldest unpublished row) and `bank_outbox_pending`: gauges
+    that query Postgres at scrape time. Reading the table rather than relay state keeps them right with
+    several relays, or with the relay dead, which is exactly when the lag matters. The query uses the
+    partial `outbox_unpublished` index. `bank_outbox_publish_delay_seconds` times insert to broker ack.
+- **Actuator exposure**: only `health`, `info` and `prometheus`, all unauthenticated so probes and the
+  scrape work without tokens. Metrics reveal volumes but no customer data; in a cluster the endpoint
+  is reachable only inside the network (a separate management port or a NetworkPolicy is the next step).
+- **Tracing**: Micrometer Tracing with the OTel bridge, exported over OTLP/HTTP to Jaeger's collector
+  (`:4318`). HTTP server spans and Kafka send/receive spans (template and listener
+  observations) are recorded. Off by default (`TRACING_ENABLED`), so tests and plain runs never try to
+  reach a collector. **Gap**: the trace does not follow an event *through the outbox*: the relay sends
+  from a scheduler thread, so the Kafka span starts a new trace. Storing `traceparent` in the outbox
+  row and restoring it on send would join them.
+- **Structured logs**: Spring Boot's built-in ECS JSON format with `LOG_FORMAT=ecs` (the container
+  image and Helm chart set it); the trace and span ids come from the MDC. Human-readable by default.
+- **Observability stack** in compose under the `observability` profile: Prometheus 2.55 (5 s scrape),
+  Grafana 11.3 with a provisioned datasource and one dashboard
+  (`observability/grafana/dashboards/core-banking-ledger.json`: payments by outcome, saga and HTTP
+  p50/p95/p99, outbox lag and publish delay, heap, Hikari), and Jaeger all-in-one 1.62 with an
+  in-memory store capped at 20k traces. The app runs on the host; containers reach it through
+  `host.docker.internal` (host-gateway). `--network host` did not work on this Docker setup.
+- **k6 load test** (`scripts/k6/payments.js`, run by `scripts/run-k6.sh` in `grafana/k6:0.54.0`):
+  20 constant VUs for 60 s. Each VU is a separate customer with its own JWT, paying from its own
+  well-funded account (so failures are errors, not insufficient funds), and 5% of requests are
+  idempotent replays. A closed model measures the throughput the single instance sustains. The rate
+  limit is lifted for the run because the test measures the payment path; `RateLimitIT` covers the
+  limiter. Tracing is on at 100% sampling, so the numbers are conservative. The script queries
+  Prometheus mid-run (`results/k6_prometheus_check.json`) and runs `GET /ledger/audit` after
+  (`results/k6_ledger_audit.json`).
+- **Result** (results/k6_payments.md, i5-14500HX, WSL2, 7 GB): about 300 req/s, p50 62 ms,
+  p95 90 ms, p99 ~115-125 ms, 0 errors over ~18.8k payments, and a clean ledger audit afterwards.
+  During the run Prometheus showed `bank_payments_total{outcome="COMPLETED"}` matching the saga
+  timer count, an outbox lag of tens of ms and a publish-delay p99 of about 240 ms (the relay polls
+  every 200 ms, so that is the expected floor plus batching).
+- **Flaky test fixed**: `PaymentRateLimiterTest` used a 10 s period and failed once on a busy machine
+  (class loading took 2 s, so refill had already started). It now uses a 1 h period.
+
 ## Known gaps (to address in later runs)
 - **Saga crash recovery**: if the process dies mid-saga, the payment stays `RESERVED`/`POSTED` and its
   idempotency key stays `IN_PROGRESS`, so retries get 409. The fix is a recovery job that resumes or compensates stale

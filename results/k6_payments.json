@@ -1,0 +1,19 @@
+{
+  "test": "POST /payments (auth + idempotency + saga), constant VUs",
+  "timestamp": "2026-11-15T14:54:07.459Z",
+  "machine": "Intel(R) Core(TM) i5-14500HX, 20 threads, 7 GB RAM, Linux 6.6.114.1-microsoft-standard-WSL2",
+  "vus": 20,
+  "duration": "60s",
+  "requests": 18850,
+  "throughput_rps": 305,
+  "error_rate": 0,
+  "latency_ms": {
+    "avg": 63.34096251952263,
+    "p50": 62.036129,
+    "p90": 80.6610724,
+    "p95": 90.21205644999998,
+    "p99": 123.04737248999967,
+    "max": 378.52473
+  },
+  "checks_passed_rate": 1
+}

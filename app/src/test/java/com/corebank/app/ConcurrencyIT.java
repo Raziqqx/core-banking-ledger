@@ -132,9 +132,13 @@ class ConcurrencyIT extends IntegrationTestBase {
     record("saga-PESSIMISTIC", r, 0);
   }
 
-  /** Appends the run's numbers to results/ so they can be cited (never hand-written). */
+  /**
+   * Appends the run's numbers to app/target/concurrency_it.csv (never hand-written). Writing under
+   * target/ keeps `mvn verify` from dirtying the tracked tree; scripts/reproduce.sh copies the file
+   * to results/ when the numbers are meant to be published.
+   */
   private static void record(String scenario, long[] r, long retries) throws IOException {
-    Path out = Path.of("..", "results", "concurrency_it.csv");
+    Path out = Path.of(System.getProperty("concurrency.results", "target/concurrency_it.csv"));
     Files.createDirectories(out.getParent());
     if (!Files.exists(out)) {
       Files.writeString(out, "timestamp,scenario,accounts,threads,ops,committed,rejected_insufficient_funds,optimistic_retries,millis,ops_per_sec\n");

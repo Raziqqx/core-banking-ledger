@@ -2,6 +2,8 @@ package com.corebank.payments;
 
 import com.corebank.common.DomainException;
 import com.corebank.ledger.LedgerService;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
 import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.List;
@@ -14,6 +16,9 @@ import org.springframework.stereotype.Service;
  * participant, as it would be across services. If a step fails, the completed steps are undone in
  * reverse order (release the hold, reverse the journal entry), and the payment ends FAILED or
  * COMPENSATED with a PaymentFailed event.
+ *
+ * <p>Metrics: {@code bank.payments{outcome}} counts finished sagas by final status and
+ * {@code bank.saga.duration{outcome}} times them (with a percentile histogram for Prometheus).
  */
 @Service
 public class PaymentSaga {
@@ -21,10 +26,12 @@ public class PaymentSaga {
 
   private final LedgerService ledger;
   private final PaymentStore store;
+  private final MeterRegistry meters;
 
-  public PaymentSaga(LedgerService ledger, PaymentStore store) {
+  public PaymentSaga(LedgerService ledger, PaymentStore store, MeterRegistry meters) {
     this.ledger = ledger;
     this.store = store;
+    this.meters = meters;
   }
 
   private record Step(String name, Runnable action, Runnable compensation) {}
@@ -33,10 +40,28 @@ public class PaymentSaga {
   private static final class Context {
     Long holdId;
     Long entryId;
+    /** The final status this saga decided on; used as the metrics outcome tag. */
+    Payment.Status outcome;
   }
 
   public Payment run(Payment p) {
     Context ctx = new Context();
+    Timer.Sample sample = Timer.start(meters);
+    try {
+      return execute(p, ctx);
+    } finally {
+      // An unexpected exception (e.g. the DB is down while finishing) is tagged ERROR.
+      String outcome = ctx.outcome == null ? "ERROR" : ctx.outcome.name();
+      sample.stop(Timer.builder("bank.saga.duration")
+          .description("End-to-end payment saga duration")
+          .tag("outcome", outcome)
+          .publishPercentileHistogram()
+          .register(meters));
+      meters.counter("bank.payments", "outcome", outcome).increment();
+    }
+  }
+
+  private Payment execute(Payment p, Context ctx) {
     String desc = "payment " + p.id();
     List<Step> steps =
         List.of(
@@ -71,7 +96,9 @@ public class PaymentSaga {
         return compensate(p, ctx, done, reason);
       }
     }
-    return store.get(p.id());
+    Payment completed = store.get(p.id());
+    ctx.outcome = Payment.Status.COMPLETED;
+    return completed;
   }
 
   private Payment compensate(Payment p, Context ctx, Deque<Step> done, String reason) {
@@ -82,11 +109,13 @@ public class PaymentSaga {
         step.compensation().run();
       } catch (RuntimeException e) {
         log.error("payment {} compensation of {} failed", p.id(), step.name(), e);
+        ctx.outcome = Payment.Status.COMPENSATION_FAILED;
         return store.finish(p, Payment.Status.COMPENSATION_FAILED, ctx.holdId, ctx.entryId,
             reason + "; compensation of " + step.name() + " failed: " + describe(e));
       }
     }
     Payment.Status status = undidSomething ? Payment.Status.COMPENSATED : Payment.Status.FAILED;
+    ctx.outcome = status;
     return store.finish(p, status, ctx.holdId, ctx.entryId, reason);
   }
 

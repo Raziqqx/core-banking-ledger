@@ -1,4 +1,8 @@
-# Local infrastructure: run `docker compose up -d`, then `mvn -pl app spring-boot:run`.
+# Local infrastructure: run `docker compose up -d`, then `mvn -pl app spring-boot:run`
+# (or `java -jar app/target/app-*.jar --spring.profiles.active=dev`).
+# Observability stack (Prometheus, Grafana, Jaeger): `docker compose --profile observability up -d`.
+#   Grafana http://localhost:3000 (anonymous viewer), Prometheus :9090, Jaeger UI :16686.
+#   Start the app with TRACING_ENABLED=true to send traces to Jaeger over OTLP (:4318).
 services:
   postgres:
     image: postgres:16-alpine
@@ -23,3 +27,39 @@ services:
       - --kafka-addr=internal://0.0.0.0:9092,external://0.0.0.0:19092
       - --advertise-kafka-addr=internal://redpanda:9092,external://localhost:19092
     ports: ["19092:19092"]
+
+  prometheus:
+    profiles: [observability]
+    image: prom/prometheus:v2.55.1
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=2d
+    volumes:
+      - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    # The app usually runs on the host (mvn/java -jar); host-gateway makes it reachable.
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    ports: ["9090:9090"]
+
+  grafana:
+    profiles: [observability]
+    image: grafana/grafana:11.3.0
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports: ["3000:3000"]
+    depends_on: [prometheus]
+
+  jaeger:
+    profiles: [observability]
+    image: jaegertracing/all-in-one:1.62.0
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+      MEMORY_MAX_TRACES: "20000"     # in-memory store; bounded for a 7 GB machine
+    ports:
+      - "16686:16686"   # UI
+      - "4318:4318"     # OTLP/HTTP
