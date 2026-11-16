@@ -52,7 +52,7 @@ The end-to-end HTTP result is in `results/k6_payments.md`: 380.4 req/s, with p50
 50.2/70.1/85.9 ms and 0 errors over 23,477 requests. That was 20 VUs on a single instance with
 100% trace sampling. The ledger audit afterwards was clean.
 
-## Saga correctness: review fixes (commit 672bfb9)
+## Saga correctness: review fixes (commit 5a272be)
 
 1. **Compensation was registered per step, after the step was recorded.** If `store.progress`
    failed after `captureHold` had moved the money, the saga had nothing to undo and still reported
