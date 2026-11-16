@@ -1,5 +1,7 @@
 # core-banking-ledger
 
+**Start here: [docs/GUIDE.md](docs/GUIDE.md)** (study guide: how every part works, traced through the code).
+
 A production-style banking backend in Java 21 and Spring Boot 3.5. It has accounts, a double-entry
 ledger, payments run as an orchestrated saga, and notifications fed by Kafka (Redpanda) events
 through a transactional outbox. Postgres is the system of record. The build includes JWT security,
@@ -68,12 +70,12 @@ was running, at about 300 req/s.
 
 ## Quick start
 
-You need Docker, Java 21 and Maven.
+You need Docker, Java 21, Maven, curl and jq (the demo uses jq to read tokens).
 
 ```bash
 docker compose up -d                       # Postgres 16 + Redpanda
 mvn -B verify                              # unit, contract and Testcontainers ITs
-mvn -pl app spring-boot:run -Dspring-boot.run.profiles=dev
+java -jar app/target/app-0.1.0-SNAPSHOT.jar --spring.profiles.active=dev   # jar built by mvn verify
 # Swagger UI: http://localhost:8080/swagger-ui.html
 ```
 
@@ -94,27 +96,51 @@ ADMIN=$(curl -s localhost:8080/dev/token -H 'Content-Type: application/json' \
 ALICE=$(curl -s localhost:8080/dev/token -H 'Content-Type: application/json' \
   -d '{"subject":"alice","roles":["CUSTOMER"]}' | jq -r .access_token)
 
-# open two accounts and fund one (admin only)
-curl -s localhost:8080/accounts -H "Authorization: Bearer $ADMIN" -H 'Content-Type: application/json' \
-  -d '{"owner":"alice","currency":"SGD","overdraftLimit":0}'
-curl -s localhost:8080/accounts -H "Authorization: Bearer $ADMIN" -H 'Content-Type: application/json' \
-  -d '{"owner":"bob","currency":"SGD","overdraftLimit":0}'
-curl -s localhost:8080/accounts/1/deposits -H "Authorization: Bearer $ADMIN" \
-  -H 'Content-Type: application/json' -d '{"amount":10000}'
+# open two accounts and fund one (admin only); ids are captured so this works on a non-empty DB
+A=$(curl -s localhost:8080/accounts -H "Authorization: Bearer $ADMIN" -H 'Content-Type: application/json' \
+  -d '{"owner":"alice","currency":"SGD","overdraftLimit":0}' | jq -r .id)
+B=$(curl -s localhost:8080/accounts -H "Authorization: Bearer $ADMIN" -H 'Content-Type: application/json' \
+  -d '{"owner":"bob","currency":"SGD","overdraftLimit":0}' | jq -r .id)
+curl -s localhost:8080/accounts/$A/deposits -H "Authorization: Bearer $ADMIN" \
+  -H 'Content-Type: application/json' -d '{"amount":10000}'; echo     # {"entryId":...}
 
-# pay as alice; send the same request twice to see the idempotent replay
+# pay as alice; send the same request twice to see the idempotent replay (identical 201 bodies)
+KEY=demo-$RANDOM
 for i in 1 2; do
-curl -s localhost:8080/payments -H "Authorization: Bearer $ALICE" -H 'Idempotency-Key: demo-1' \
-  -H 'Content-Type: application/json' \
-  -d '{"fromAccount":1,"toAccount":2,"amount":2500,"currency":"SGD","reference":"lunch"}'; echo
+curl -s -w ' HTTP %{http_code}' localhost:8080/payments -H "Authorization: Bearer $ALICE" \
+  -H "Idempotency-Key: $KEY" -H 'Content-Type: application/json' \
+  -d "{\"fromAccount\":$A,\"toAccount\":$B,\"amount\":2500,\"currency\":\"SGD\",\"reference\":\"lunch\"}"; echo
 done
 
+curl -s localhost:8080/accounts/$A/balance -H "Authorization: Bearer $ALICE"; echo   # balance 7500
 curl -s localhost:8080/ledger/audit -H "Authorization: Bearer $ADMIN"   # {"ok":true,...}
 ```
 
-To see the dashboards, run `docker compose --profile observability up -d` and start the app with
-`TRACING_ENABLED=true`. Grafana is at http://localhost:3000, Prometheus at :9090 and Jaeger at :16686.
-A load run is `scripts/run-k6.sh`.
+## See it working
+
+Each step was run on 2026-11-16. If port 8080 is taken on your machine, start the app with
+`SERVER_PORT=8081` and use that port below.
+
+1. **Start everything.** `docker compose --profile observability up -d`, then `mvn -B verify` (or
+   skip it if the jar is already built) and
+   `TRACING_ENABLED=true java -jar app/target/app-0.1.0-SNAPSHOT.jar --spring.profiles.active=dev`.
+   You should see `Started CoreBankingApplication` in the log.
+2. **Open the API docs.** Go to http://localhost:8080/swagger-ui.html. You should see the page
+   below, with the ledger, payment, dev-token, account and notification endpoints.
+   ![Swagger UI](docs/swagger-ui.png)
+3. **Run the Demo above.** You should see two identical `HTTP 201` payment bodies (the second is the
+   idempotent replay), a balance of 7500, and `"ok":true` from the audit. A second later
+   `GET /notifications?accountId=<alice's id>` (admin token) shows
+   "Payment of 25.00 SGD to account ... completed", delivered through the outbox and Kafka.
+4. **Open the dashboard.** Put some load on the app (`scripts/run-k6.sh` for the full test, or loop
+   the demo payment for a minute), then go to http://localhost:3000/d/core-banking-ledger.
+   You should see the eight panels fill in. The screenshot below came from 10 customers paying in a
+   loop for 90 s with the default rate limit (30/min each), so most requests were 429s (red).
+   ![Grafana dashboard](docs/grafana-dashboard.png)
+5. **Open a trace.** Go to http://localhost:16686, pick the service `core-banking-ledger` and click
+   *Find Traces*. You should see one trace per request; open one to see its spans.
+
+Stop with `docker compose --profile observability down`.
 
 ## Deployment
 

@@ -1,5 +1,5 @@
-# Local infrastructure: run `docker compose up -d`, then `mvn -pl app spring-boot:run`
-# (or `java -jar app/target/app-*.jar --spring.profiles.active=dev`).
+# Local infrastructure: run `docker compose up -d`, build with `mvn -B verify`, then
+# `java -jar app/target/app-0.1.0-SNAPSHOT.jar --spring.profiles.active=dev`.
 # Observability stack (Prometheus, Grafana, Jaeger): `docker compose --profile observability up -d`.
 #   Grafana http://localhost:3000 (anonymous viewer), Prometheus :9090, Jaeger UI :16686.
 #   Start the app with TRACING_ENABLED=true to send traces to Jaeger over OTLP (:4318).

@@ -281,3 +281,10 @@ Decisions made while building, with the reason for each. Newest milestone last.
   `COMPENSATION_FAILED` (the saga and the recovery job alike). Real banks handle this with a receivable or manual process.
 - Postgres and the broker are not covered by one transaction. That is the point of the outbox, but the relay still adds
   up to one polling interval of latency.
+
+## Final-round checks (2026-11-16)
+- **Quick start runs the jar, not `mvn -pl app spring-boot:run`.** With `-pl app` (and no `-am`)
+  Maven resolves `common`, `ledger`, `payments`... from `~/.m2`, which is empty on a fresh clone
+  (build fails) and stale on a machine that once ran `mvn install` (it silently ran old code).
+  `mvn -B verify` already builds `app/target/app-0.1.0-SNAPSHOT.jar`, so the README runs that.
+- jq added to the README prerequisites (the demo uses it).
