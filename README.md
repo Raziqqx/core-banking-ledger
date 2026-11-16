@@ -1,7 +1,5 @@
 # core-banking-ledger
 
-**Start here: [docs/GUIDE.md](docs/GUIDE.md)** (study guide: how every part works, traced through the code).
-
 A production-style banking backend in Java 21 and Spring Boot 3.5. It has accounts, a double-entry
 ledger, payments run as an orchestrated saga, and notifications fed by Kafka (Redpanda) events
 through a transactional outbox. Postgres is the system of record. The build includes JWT security,
@@ -170,12 +168,3 @@ Stop with `docker compose --profile observability down`.
 - Other gaps: idempotency keys have no TTL, traces do not follow an event through the outbox, the
   rate limit applies per instance, and FX is not supported (cross-currency payments are rejected).
 
-## Target roles
-
-These are backend and platform engineering roles at banks and consultancies (DBS, Accenture, MAS).
-The project shows Java and Spring Boot, transactional correctness under concurrency, sagas and the
-outbox pattern, Kafka, Postgres, API security, observability, Kubernetes and CI/CD.
-
-More: [docs/FEATURES.md](docs/FEATURES.md) · [docs/DESIGN.md](docs/DESIGN.md) ·
-[docs/INTERVIEW_NOTES.md](docs/INTERVIEW_NOTES.md) · [RESUME_BULLETS.md](RESUME_BULLETS.md) ·
-[DECISIONS.md](DECISIONS.md)
